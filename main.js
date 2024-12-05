@@ -46,6 +46,7 @@ function readAccounts() {
     });
   } catch (error) {
     console.log(`${colors.pastelRed}File akun.txt tidak ditemukan. Membuat file baru.${colors.reset}`);
+    fs.writeFileSync('akun.txt', '');
     return [];
   }
 }
@@ -76,7 +77,7 @@ async function retryRequest(fn) {
       return await fn();
     } catch (error) {
       console.log(`${colors.pastelRed}Terjadi kesalahan saat request, proxy atau jaringan Anda mungkin down: ${error.message}. Mengulang...${colors.reset}`);
-      await new Promise(resolve => setTimeout(resolve, 5000)); // Delay sebelum mencoba lagi
+      await new Promise(resolve => setTimeout(resolve, 5000));
     }
   }
 }
@@ -104,6 +105,52 @@ async function getPoints(accessToken, agent, maskedEmail) {
   }
 }
 
+async function completeMissions(accessToken, agent, maskedEmail) {
+  try {
+    const missionsResponse = await retryRequest(() => axios.get('https://api.openloop.so/missions', {
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+      },
+      httpsAgent: agent,
+      httpAgent: agent,
+    }));
+
+    if (missionsResponse.status === 200 && missionsResponse.data.code === 2000) {
+      const missions = missionsResponse.data.data.missions.filter(mission => mission.status === 'available');
+
+      if (missions.length === 0) {
+        parentPort.postMessage(`${colors.pastelGreen}Email:${colors.reset} ${colors.pastelCyan}${maskedEmail}${colors.reset} | ${colors.pastelGreen}Missions:${colors.reset} ${colors.pastelCyan}Semua misi telah selesai.${colors.reset}`);
+        return;
+      }
+
+      for (const mission of missions) {
+        try {
+          const completeResponse = await retryRequest(() => axios.get(`https://api.openloop.so/missions/${mission.missionId}/complete`, {
+            headers: {
+              Authorization: `Bearer ${accessToken}`,
+            },
+            httpsAgent: agent,
+            httpAgent: agent,
+          }));
+
+          let status = 'Gagal';
+          if (completeResponse.status === 200 && completeResponse.data.code === 2000) {
+            status = 'Berhasil';
+          }
+          parentPort.postMessage(`${colors.pastelGreen}Email:${colors.reset} ${colors.pastelCyan}${maskedEmail}${colors.reset} | ${colors.pastelGreen}Missions:${colors.reset} ${colors.pastelRed}${mission.name}${colors.reset} | ${colors.pastelGreen}Status:${colors.reset} ${colors.pastelCyan}${status}${colors.reset}`);
+
+        } catch (error) {
+          parentPort.postMessage(`${colors.pastelRed}Email:${colors.reset} ${colors.pastelCyan}${maskedEmail}${colors.reset} | ${colors.pastelGreen}Missions:${colors.reset} ${colors.pastelRed}${mission.name}${colors.reset} | ${colors.pastelGreen}Status:${colors.reset} ${colors.pastelRed}Gagal: ${error.message}${colors.reset}`);
+        }
+      }
+    } else {
+      parentPort.postMessage(`${maskedEmail} Gagal mendapatkan daftar misi.`);
+    }
+  } catch (error) {
+    parentPort.postMessage(`${maskedEmail} Kesalahan saat menyelesaikan misi: ${error.message}`);
+  }
+}
+
 async function shareBandwidth(accessToken, agent, maskedEmail) {
   while (true) {
     try {
@@ -116,14 +163,18 @@ async function shareBandwidth(accessToken, agent, maskedEmail) {
         httpAgent: agent,
       }));
 
+
       if (response.status === 200 && response.data.code === 2000) {
-        const points = await getPoints(accessToken, agent, maskedEmail);
-        
-        if (points !== null) {
-          console.log(`${colors.pastelGreen}Email:${colors.reset} ${colors.pastelCyan}${maskedEmail}${colors.reset} | ${colors.pastelGreen}PING:${colors.reset} ${colors.pastelRed}${quality}${colors.reset} | ${colors.pastelGreen}Saldo:${colors.reset} ${colors.pastelCyan}${points}${colors.reset}`);
-        } else {
-          console.log(`${colors.pastelGreen}Email:${colors.reset} ${colors.pastelCyan}${maskedEmail}${colors.reset} | ${colors.pastelGreen}PING:${colors.reset} ${colors.pastelRed}${quality}${colors.reset} | ${colors.pastelGreen}Saldo:${colors.reset} Gagal mengambil saldo`);
-        }
+          const points = await getPoints(accessToken, agent, maskedEmail)
+
+          if (points !== null) {
+            console.log(`${colors.pastelGreen}Email:${colors.reset} ${colors.pastelCyan}${maskedEmail}${colors.reset} | ${colors.pastelGreen}PING:${colors.reset} ${colors.pastelRed}${quality}${colors.reset} | ${colors.pastelGreen}Saldo:${colors.reset} ${colors.pastelCyan}${points}${colors.reset}`);
+          } else {
+            console.log(`${colors.pastelGreen}Email:${colors.reset} ${colors.pastelCyan}${maskedEmail}${colors.reset} | ${colors.pastelGreen}PING:${colors.reset} ${colors.pastelRed}${quality}${colors.reset} | ${colors.pastelGreen}Saldo:${colors.reset} Gagal mengambil saldo`);
+          }
+
+
+
       } else {
         parentPort.postMessage(`${maskedEmail} Gagal berbagi bandwidth: ${response.data.message}`);
       }
@@ -131,8 +182,8 @@ async function shareBandwidth(accessToken, agent, maskedEmail) {
       if (error.response && error.response.status === 429) {
         parentPort.postMessage(`${maskedEmail} Error: Batas rate tercapai. Menunggu...`);
       } else if (error.message.includes('disconnected before secure TLS connection was established')) {
-        parentPort.postMessage(`${maskedEmail} Kesalahan TLS, mencoba lagi...`);
-      } else {
+          parentPort.postMessage(`${maskedEmail} Kesalahan TLS, mencoba lagi...`);
+        } else {
         parentPort.postMessage(`${maskedEmail} Kesalahan saat berbagi bandwidth: ${error.message}`);
       }
     }
@@ -142,13 +193,8 @@ async function shareBandwidth(accessToken, agent, maskedEmail) {
 
 async function workerMain() {
   const { account, proxy } = workerData;
-
   const proxyDetails = proxy ? proxy.split('@')[1] : null;
-
-  const maskEmail = (email) => {
-    return email.replace(/(.{2})(.*)(@.*)/, '$1*****$3');
-  }
-
+  const maskEmail = (email) => email.replace(/(.{2})(.*)(@.*)/, '$1*****$3');
   const maskedEmail = maskEmail(account.email);
 
   try {
@@ -163,8 +209,9 @@ async function workerMain() {
     if (loginResponse.status === 200 && loginResponse.data.code === 2000) {
       const accessToken = loginResponse.data.data.accessToken;
       parentPort.postMessage(`${colors.pastelGreen}Berhasil Login Dengan Email: ${colors.reset}${colors.pastelCyan}${maskedEmail}${colors.reset} | ${colors.pastelGreen}Proxy: ${colors.reset}${colors.pastelCyan}${proxyDetails ? proxyDetails : 'Tanpa Proxy'}${colors.reset}`);
-
+      await completeMissions(accessToken, proxyDetails ? new HttpsProxyAgent(proxy) : undefined, maskedEmail);
       await getPoints(accessToken, proxyDetails ? new HttpsProxyAgent(proxy) : undefined, maskedEmail);
+
       await shareBandwidth(accessToken, proxyDetails ? new HttpsProxyAgent(proxy) : undefined, maskedEmail);
     } else {
       parentPort.postMessage(`${colors.pastelRed}Gagal login untuk akun: ${account.email}${colors.reset}`);
@@ -174,7 +221,6 @@ async function workerMain() {
   }
 }
 
-// Fungsi utama untuk menjalankan program
 async function main() {
   clearConsole();
   const accounts = readAccounts();
@@ -191,18 +237,17 @@ async function main() {
 
   for (const account of accounts) {
     let loggedIn = false;
-
     for (const proxy of proxies) {
       await startWorker(account, proxy);
       loggedIn = true;
       break;
     }
-
     if (!loggedIn) {
       await startWorker(account, null);
     }
   }
 }
+
 
 if (isMainThread) {
   main().catch(console.error);
