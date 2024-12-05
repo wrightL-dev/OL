@@ -11,6 +11,8 @@
 
 **• Otomatis PING**
 
+**• Otomatis Clear Task**
+
 **• Support Proxy/Tanpa Proxy**
 
 ## Instalasi
